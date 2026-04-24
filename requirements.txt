@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic
+kafka-python
+redis
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-requests
