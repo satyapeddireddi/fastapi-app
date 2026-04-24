@@ -1,54 +1,43 @@
+import time
+import json
+import os
 from fastapi import FastAPI
 from kafka import KafkaProducer
+from kafka.errors import NoBrokersAvailable
 import redis.asyncio as redis
-import os
-import json
-
-# OpenTelemetry Imports
-from opentelemetry import trace
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 app = FastAPI()
 
-# Configuration from Environment Variables
-# These should match your Service names in Kubernetes
-KAFKA_SERVER = os.getenv("KAFKA_SERVER", "kafka-service.app.svc.cluster.local:9092")
+KAFKA_SERVER = os.getenv("KAFKA_SERVER", "kafka-service:9092")
 VALKEY_URL = os.getenv("VALKEY_URL", "redis://valkey:6379")
 
-# Initialize Clients
-# redis.from_url works perfectly with Valkey
+# Async Client for Valkey
 v_client = redis.from_url(VALKEY_URL, decode_responses=True)
-producer = KafkaProducer(
-    bootstrap_servers=KAFKA_SERVER,
-    value_serializer=lambda v: json.dumps(v).encode('utf-8')
-)
 
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
+# Robust Kafka Producer Initialization
+producer = None
+print(f"Connecting to Kafka at {KAFKA_SERVER}...")
+
+for i in range(20):  # Try for ~100 seconds
+    try:
+        producer = KafkaProducer(
+            bootstrap_servers=KAFKA_SERVER,
+            value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+            request_timeout_ms=10000  # Give it time to respond
+        )
+        print("Successfully connected to Kafka!")
+        break
+    except NoBrokersAvailable:
+        print(f"Kafka not ready yet (attempt {i+1}/20)... waiting 5s")
+        time.sleep(5)
+
+if not producer:
+    print("Failed to connect to Kafka after multiple attempts. Exiting.")
+    exit(1)
 
 @app.post("/send")
 async def send_data(data: dict):
-    """
-    1. Receives JSON data
-    2. Sets a status key in Valkey
-    3. Pushes the message to Kafka
-    """
     msg_id = data.get("id", "unknown")
-    
-    # 1. Update state in Valkey
     await v_client.set(f"msg:{msg_id}", "processed")
-    
-    # 2. Push to Kafka
     producer.send('app-topic', value=data)
-    producer.flush()
-    
-    return {
-        "status": "success", 
-        "id": msg_id, 
-        "storage": "valkey",
-        "queue": "kafka"
-    }
-
-# Enable automatic tracing for all FastAPI routes
-FastAPIInstrumentor.instrument_app(app)
+    return {"status": "success", "id": msg_id}
